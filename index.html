@@ -164,6 +164,8 @@ label.chk input{margin-top:5px;flex:none}
 .btn.big{padding:12px 22px;font-size:16px}
 .warn-line{font-size:13px;color:var(--gC);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .ok-line{font-size:13px;color:var(--gA)}
+.titles{display:flex;flex-direction:column;gap:4px;margin:-4px 0 12px;font-size:14px}
+.titles .tlabel{display:inline-block;font-size:11px;font-weight:700;padding:0 7px;margin-right:6px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
 .thumb .kind{position:absolute;left:3px;bottom:3px;background:rgba(0,0,0,.62);color:#fff;font-size:10px;padding:1px 6px;border-radius:6px}
 @media (max-width:640px){
   nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--surface);border-top:1px solid var(--line);padding:6px max(6px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(6px,env(safe-area-inset-left,0px));display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2px}
@@ -217,6 +219,7 @@ label.chk input{margin-top:5px;flex:none}
         <span class="name" id="cur-name">—</span>
         <span class="meta" id="cur-meta"></span>
       </div>
+      <div id="cur-titles" class="titles" hidden></div>
       <div class="timer">
         <div>
           <div class="phase" id="t-phase">待機中</div>
@@ -345,6 +348,20 @@ label.chk input{margin-top:5px;flex:none}
         <label class="f">評価ペア<input type="text" id="s-pair" placeholder="例：B-07"></label>
         <label class="f">評価者氏名<input type="text" id="s-name" placeholder="例：東北 太郎"></label>
       </div>
+    </div>
+    <div class="panel">
+      <h2>名簿から担当学生を登録</h2>
+      <p class="muted" style="margin-top:0">発表者名簿のファイル（CSV）を一度読み込んでおくと、担当のパネル番号を入力するだけで、氏名・評価開始時刻・発表タイトルが自動で入ります。名簿はこの端末内にのみ保存されます。</p>
+      <div class="row">
+        <label class="btn">名簿ファイルを読み込む<input type="file" id="roster-file" accept=".csv,.json,text/csv,application/json" hidden></label>
+        <span class="muted" id="roster-status"></span>
+        <button class="btn ghost" id="btn-roster-clear">名簿を削除</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <label class="f" style="flex:1;min-width:220px">担当パネル番号（スペースまたは「,」区切り）<input type="text" id="assign-panels" inputmode="numeric" placeholder="例：7 13 19 25 31 37"></label>
+        <button class="btn primary" id="btn-assign" style="align-self:flex-end">担当学生を登録</button>
+      </div>
+      <p class="muted" id="assign-result" style="margin:8px 0 0"></p>
     </div>
     <div class="panel">
       <h2>担当学生（6名）</h2>
@@ -483,6 +500,7 @@ let S;
 try{const raw=localStorage.getItem(KEY); S=raw?JSON.parse(raw):null}catch(e){S=null}
 if(!S||!S.slots) S=defaultState(true);
 S.agg=S.agg||[];
+S.roster=S.roster||[];
 if(!Array.isArray(S.posters)||S.posters.length!==6)S.posters=TIMES.map(()=>[]);
 S.evals.forEach(e=>{e.gSrc=e.gSrc||[];e.transcript=e.transcript||""});
 ["record","stt","autoAI"].forEach(k=>{if(S.settings[k]==null)S.settings[k]=true});S.settings.model=S.settings.model||"claude-sonnet-5-5";S.settings.apiKey=S.settings.apiKey||"";
@@ -569,6 +587,7 @@ function renderEval(){
   const x=S.slots[S.cur], e=S.evals[S.cur];
   $("#cur-name").textContent=x.student||"（学生未設定）";
   $("#cur-meta").textContent=[x.time+" 開始",x.panel&&"パネル "+x.panel,(S.cur<3?"第1部":"第2部")].filter(Boolean).join("　");
+  renderTitles(x);
   $("#memo").value=e.memo||""; $("#opt-compact").checked=!!S.settings.compact;
   renderItems(); renderSummary(); renderAiPanel(); tick();
 }
@@ -753,6 +772,7 @@ ${crit}
  "questions":"質疑で出た主な質問と学生の回答の要約（100字以内）"}
 
 【発表者】${x.student||"（氏名未設定）"}
+【発表タイトル】薬局実習：${x.pharmacyTitle||"不明"}／病院実習：${x.hospitalTitle||"不明"}
 【文字起こし】
 <<<
 ${tr}
@@ -925,7 +945,7 @@ function matchSlot(read){
   return -1;
 }
 async function identifyPoster(blob){
-  const cand=S.slots.map((x,i)=>x.student?`${i}: パネル番号「${x.panel||"不明"}」 氏名「${x.student.replace(/（例）/g,"")}」`:null).filter(Boolean).join("\n");
+  const cand=S.slots.map((x,i)=>x.student?`${i}: パネル番号「${x.panel||"不明"}」 氏名「${x.student.replace(/（例）/g,"")}」${x.pharmacyTitle?` 薬局タイトル「${x.pharmacyTitle}」`:""}${x.hospitalTitle?` 病院タイトル「${x.hospitalTitle}」`:""}`:null).filter(Boolean).join("\n");
   const prompt=`この画像は薬学部「実務実習成果報告会」で掲示される学生のポスター（またはその一部）の写真です。
 ポスターに書かれたパネル番号（ポスター番号）、発表者氏名、タイトルを読み取り、薬局実習と病院実習のどちらのポスターかを判断してください。
 次の候補のうち、どの学生のポスターかを判断し、その番号を match に入れてください。判断できなければ -1 にしてください。
@@ -1037,6 +1057,67 @@ $("#s-per").addEventListener("change",ev=>{S.settings.perStudent=+ev.target.valu
 $("#poster-multi").addEventListener("change",ev=>{const fs=Array.from(ev.target.files||[]);ev.target.value="";addPostersBatch(fs)});
 $("#ev-cap").addEventListener("change",ev=>{const f=ev.target.files[0];ev.target.value="";if(f)addPoster(S.cur,f,true)});
 $("#btn-goto-poster").addEventListener("click",()=>showTab("poster"));
+/* ---------- roster (名簿) ---------- */
+const ROSTER_HEAD=["パネル番号","評価開始","氏名","フリガナ","配属教室","実習薬局","薬局発表タイトル","実習病院","病院発表タイトル"];
+function rosterFromRows(rows){
+  if(!rows.length)return [];
+  const h=rows[0].map(x=>x.trim()), ix=n=>h.indexOf(n);
+  if(ix("パネル番号")<0||ix("氏名")<0)throw new Error("名簿ファイルの1行目に「パネル番号」「氏名」の列が必要です");
+  return rows.slice(1).map(r=>{const g=n=>ix(n)>=0?(r[ix(n)]||"").trim():"";
+    return {panel:g("パネル番号"),time:g("評価開始"),name:g("氏名"),kana:g("フリガナ"),dept:g("配属教室"),pharmacy:g("実習薬局"),pharmacyTitle:g("薬局発表タイトル"),hospital:g("実習病院"),hospitalTitle:g("病院発表タイトル")}}).filter(x=>x.panel&&x.name);
+}
+const panelKey=v=>{const m=String(v||"").normalize("NFKC").match(/\d+/g);return m?String(+m.join("")):""};
+function findRoster(panel){const k=panelKey(panel);return k?(S.roster||[]).find(r=>panelKey(r.panel)===k):null}
+function applyRosterToSlot(i,r){
+  const x=S.slots[i];
+  if(x.student&&x.student!==r.name){S.evals[i]=blankEval();S.posters[i]=[]}
+  Object.assign(x,{panel:String(r.panel),student:r.name,kana:r.kana,dept:r.dept,pharmacy:r.pharmacy,pharmacyTitle:r.pharmacyTitle,hospital:r.hospital,hospitalTitle:r.hospitalTitle});
+}
+function renderRoster(){
+  const n=(S.roster||[]).length;
+  $("#roster-status").textContent=n?`名簿：${S.rosterName||"読み込み済み"}（${n}名）`:"名簿は未読み込みです。";
+  $("#assign-panels").disabled=!n; $("#btn-assign").disabled=!n;
+}
+function assignPanels(){
+  const nums=($("#assign-panels").value.normalize("NFKC").match(/\d+/g)||[]).map(x=>String(+x));
+  if(!nums.length){$("#assign-result").textContent="パネル番号を入力してください（例：7 13 19 25 31 37）";return}
+  const msgs=[], found=[];
+  nums.forEach(k=>{const r=findRoster(k);if(!r)msgs.push(`パネル${k}は名簿にありません`);else found.push(r)});
+  const used=Array(6).fill(null), overflow=[];
+  found.forEach(r=>{const i=TIMES.indexOf(r.time);if(i>=0&&!used[i])used[i]=r;else overflow.push(r)});
+  overflow.forEach(r=>{const i=used.findIndex(u=>!u);
+    if(i<0){msgs.push(`パネル${r.panel}を入れる枠がありません`);return}
+    used[i]=r; msgs.push(`パネル${r.panel}（${r.time||"時刻不明"}開始）は他の学生と時刻が重なるため${TIMES[i]}の枠に入れました`)});
+  TIMES.forEach((t,i)=>{
+    if(used[i])applyRosterToSlot(i,used[i]);
+    else{if(S.slots[i].student){S.evals[i]=blankEval();S.posters[i]=[]}S.slots[i]=Object.assign({time:t},{panel:"",student:""})}
+  });
+  if(S.sample){S.settings.pair="";S.settings.name=""}
+  S.sample=false; S.cur=Math.max(0,TIMES.findIndex((t,i)=>used[i])); save();
+  $("#assign-result").textContent=`${found.length}名を登録しました。`+(msgs.length?"　"+msgs.join("。"):"");
+  renderSetup(); renderHeader(); toast(found.length+"名を登録しました");
+}
+function renderTitles(x){
+  const el=$("#cur-titles"); if(!el)return;
+  const parts=[];
+  if(x.pharmacyTitle)parts.push(`<div><span class="tlabel">薬局</span>${esc(x.pharmacyTitle)}<span class="muted">（${esc(x.pharmacy||"")}）</span></div>`);
+  if(x.hospitalTitle)parts.push(`<div><span class="tlabel">病院</span>${esc(x.hospitalTitle)}<span class="muted">（${esc(x.hospital||"")}）</span></div>`);
+  el.innerHTML=parts.join(""); el.hidden=!parts.length;
+}
+async function readRosterFile(f){
+  const tryRead=enc=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result));r.onerror=rej;r.readAsText(f,enc)});
+  let t=await tryRead("utf-8"); if(t.indexOf("\ufffd")>=0)t=await tryRead("shift_jis");
+  t=t.replace(/^﻿/,"");
+  let list;
+  if(/^\s*[\[{]/.test(t)){const j=JSON.parse(t);list=(Array.isArray(j)?j:j.students||[]).map(r=>({panel:String(r.panel),time:r.time||"",name:r.name||"",kana:r.kana||"",dept:r.dept||"",pharmacy:r.pharmacy||"",pharmacyTitle:r.pharmacyTitle||"",hospital:r.hospital||"",hospitalTitle:r.hospitalTitle||""}))}
+  else list=rosterFromRows(parseCSV(t));
+  if(!list.length)throw new Error("名簿に学生が見つかりませんでした");
+  S.roster=list; S.rosterName=f.name.replace(/\.(csv|json)$/i,""); save(); renderRoster();
+  toast(list.length+"名の名簿を読み込みました");
+}
+$("#roster-file").addEventListener("change",async ev=>{const f=ev.target.files[0];ev.target.value="";if(!f)return;try{await readRosterFile(f)}catch(err){$("#assign-result").textContent="名簿を読み込めませんでした："+(err.message||err)}});
+$("#btn-assign").addEventListener("click",assignPanels);
+$("#btn-roster-clear").addEventListener("click",()=>{S.roster=[];S.rosterName="";save();renderRoster();toast("名簿を削除しました")});
 
 /* ---------- sheet ---------- */
 function renderSheet(){
@@ -1085,6 +1166,7 @@ function renderSetup(){
   renderHeader();
   const st=S.settings;
   $("#s-group").value=st.group; $("#s-pair").value=st.pair; $("#s-name").value=st.name;
+  renderRoster();
   $("#s-overB").value=st.overB; $("#s-short").value=st.shortMin;
   $("#s-record").checked=st.record!==false; $("#s-stt").checked=st.stt!==false; $("#s-autoai").checked=st.autoAI!==false; $("#s-apikey").value=st.apiKey||""; $("#s-model").value=st.model||"claude-sonnet-5-5";
   $("#s-rule").textContent=`現在の目安：${st.shortMin}分未満 → C ／ 10:00以内 → A ／ 10:01〜${mmss(PRES+st.overB)} → B ／ それ以上 → C`;
